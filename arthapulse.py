@@ -123,8 +123,12 @@ st.markdown("""
     /* Sembunyikan elemen default Streamlit */
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
-    header {visibility: hidden;}
 
+    /* Membuat background header transparan tanpa menyembunyikan tombol sidebar mobile */
+    [data-testid="stHeader"] {
+        background-color: rgba(0, 0, 0, 0);
+    }
+            
     /* Metric override */
     [data-testid="metric-container"] {
         background: #f8fafc;
