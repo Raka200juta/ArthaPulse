@@ -3,6 +3,46 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 import requests
+import firebase_admin
+from firebase_admin import credentials, firestore, auth
+
+if not firebase_admin._apps:
+    cred = credentials.Certificate("firebase-key.json")
+    firebase_admin.initialize_app(cred)
+
+db = firestore.client()
+
+FIREBASE_WEB_API_KEY = "AIzaSyAbJ_CRg_VwXcO1Fd4oPSJlvLTRKLOyuRo"
+
+# State Manajemen Sesi Pengguna
+if "user_info" not in st.session_state:
+    st.session_state.user_info = None
+
+is_premium_user = False
+
+# Fungsi Verifikasi Login via REST API
+def login_user(email, password):
+    url = f"https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key={FIREBASE_WEB_API_KEY}"
+    payload = {"email": email, "password": password, "returnSecureToken": True}
+    response = requests.post(url, json=payload).json()
+    if "localId" in response:
+        return response["localId"]
+    return None
+
+# Fungsi Pendaftaran Pengguna Baru
+def register_user(email, password):
+    try:
+        user = auth.create_user(email=email, password=password)
+        # Set status awal pengguna sebagai akun Free di Firestore
+        db.collection("users").document(user.uid).set({"status": "Free"})
+        return True
+    except Exception as e:
+        st.sidebar.error(f"Gagal daftar: {str(e)}")
+        return False
+    
+# Simulasi status login pengguna (Default: Free Session)
+# Nantinya nilai ini berubah menjadi True setelah fungsi login berhasil diverifikasi
+is_premium_user = False
 
 # ─── KONFIGURASI HALAMAN ───────────────────────────────────────────────────────
 st.set_page_config(
@@ -187,6 +227,42 @@ def warna_badge(status: str) -> str:
 with st.sidebar:
     st.markdown('<p class="main-title" style="font-size:1.4rem;">📊 ArthaPulse</p>', unsafe_allow_html=True)
     st.markdown('<p class="main-subtitle">Panel Kendali Analisis</p>', unsafe_allow_html=True)
+    st.divider()
+
+    if st.session_state.user_info is None:
+        st.markdown("**🔐 Akses Akun**")
+        menu_auth = st.radio("Pilih Aksi", ["Login", "Daftar"], horizontal=True, label_visibility="collapsed")
+        
+        auth_email = st.text_input("Email")
+        auth_password = st.text_input("Password", type="password")
+        
+        if menu_auth == "Login":
+            if st.button("Masuk", use_container_width=True):
+                uid = login_user(auth_email, auth_password)
+                if uid:
+                    st.session_state.user_info = uid
+                    st.rerun()
+                else:
+                    st.sidebar.error("Email atau Password salah.")
+        else:
+            if st.button("Buat Akun", use_container_width=True):
+                if register_user(auth_email, auth_password):
+                    st.sidebar.success("Akun berhasil dibuat! Silakan login.")
+    else:
+        # Ambil data status premium dari Firestore secara real-time
+        user_doc = db.collection("users").document(st.session_state.user_info).get()
+        user_status = user_doc.to_dict().get("status", "Free") if user_doc.exists else "Free"
+        
+        if user_status == "Premium":
+            is_premium_user = True
+            st.success(f"✨ Akun Premium Aktif")
+        else:
+            st.info(f"Status Akun: Free Member")
+            
+        if st.button("Log Out", use_container_width=True):
+            st.session_state.user_info = None
+            st.rerun()
+            
     st.divider()
 
     st.markdown("**⏱ Periode Data**")
@@ -423,6 +499,11 @@ with tab_ihsg_chart:
 
 # ─── SEKSI 3: ANALISIS SAHAM PILIHAN ──────────────────────────────────────────
 st.markdown('<p class="section-label">🏦 Portofolio Saham Pilihan</p>', unsafe_allow_html=True)
+
+# Aturan Paywall: Pengguna free dibatasi maksimal 2 saham
+if not is_premium_user and len(saham_pilihan) > 2:
+    st.warning("🔒 **Fitur Premium Aktif:** Pengguna akun gratis hanya dapat menganalisis maksimal 2 saham secara bersamaan. Silakan upgrade ke Premium untuk membuka batasan.")
+    saham_pilihan = saham_pilihan[:2]  # Potong paksa akses hanya untuk 2 saham pertama
 
 if not saham_pilihan:
     st.info("Pilih minimal satu saham di sidebar untuk memulai analisis saham.", icon="ℹ️")
