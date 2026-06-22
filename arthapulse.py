@@ -2,6 +2,7 @@ import streamlit as st
 import yfinance as yf
 import pandas as pd
 import numpy as np
+import requests
 
 # ─── KONFIGURASI HALAMAN ───────────────────────────────────────────────────────
 st.set_page_config(
@@ -96,9 +97,17 @@ st.markdown("""
 # ─── FUNGSI UTILITAS ───────────────────────────────────────────────────────────
 @st.cache_data(ttl=300)  # Cache 5 menit, otomatis refresh
 def load_financial_data(ticker_symbol: str, time_period: str) -> pd.DataFrame:
-    """Ambil data historis dari Yahoo Finance."""
+    """Ambil data historis dari Yahoo Finance menggunakan custom session."""
     try:
-        df = yf.Ticker(ticker_symbol).history(period=time_period)
+        # Membuat sesi buatan untuk mengelabui proteksi Yahoo Finance
+        session = requests.Session()
+        session.headers.update({
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        })
+        
+        ticker_data = yf.Ticker(ticker_symbol, session=session)
+        df = ticker_data.history(period=time_period)
+        
         if df.empty:
             return pd.DataFrame()
         return df
