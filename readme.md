@@ -1,4 +1,5 @@
-# 📊 ArthaPulse | Indonesia Financial Dashboard
+# 📊 ArthaPulse | 
+Indonesia Financial Dashboard
 
 ArthaPulse is a web-based financial dashboard application providing real-time analysis of IDX stock market data, USD/IDR exchange rates, and the Jakarta Composite Index (IHSG). Built entirely in Python using Streamlit, this application leverages Yahoo Finance data to deliver in-depth technical indicators.
 

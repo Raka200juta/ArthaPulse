@@ -72,7 +72,7 @@ st.markdown("""
     }
 
     /* Penyesuaian Sidebar */
-    [data-testid="stSidebar"] { background: #f8fafc; border-right: 1px solid #e2e8f0; }
+    [data-testid="stSidebar"] { background: #0f172a; border-right: 1px solid #e2e8f0; }
     [data-testid="stSidebar"] h1, [data-testid="stSidebar"] h2, [data-testid="stSidebar"] h3 {
         font-family: 'Space Grotesk', sans-serif;
     }
