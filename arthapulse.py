@@ -261,6 +261,29 @@ with st.sidebar:
         else:
             st.info(f"Status Akun: Free Member")
             
+            with st.expander("🚀 Upgrade ke Premium"):
+                st.markdown("""
+                <div style="background: linear-gradient(135deg, #1e1b4b 0%, #311042 100%);
+                            padding: 20px; border-radius: 12px; border: 1px solid #4c1d95; text-align: center;">
+                    <h4 style="color: #c084fc; margin-top: 0; font-family: 'Space Grotesk', sans-serif;">PRO PLAN</h4>
+                    <div style="font-size: 1.8rem; font-weight: 700; color: #f8fafc; margin: 10px 0;">
+                        Rp 49.000 <span style="font-size: 0.8rem; color: #94a3b8; font-weight: 400;">/ bulan</span>
+                    </div>
+                    <ul style="text-align: left; color: #cbd5e1; font-size: 0.85rem; padding-left: 20px; margin-bottom: 20px;">
+                        <li>Analisis Saham Tanpa Batas ( > 2 Saham)</li>
+                        <li>Akses Fitur Grafik Kinerja Relatif</li>
+                        <li>Akses Matriks Korelasi Antar Saham</li>
+                        <li>Sinyal Indikator Makro Lebih Cepat</li>
+                    </ul>
+                    <a href="https://trakteer.id/r4kiya/showcase" 
+                       target="_blank" 
+                       style="display: block; background: #7c3aed; color: white; text-decoration: none; 
+                              padding: 10px; border-radius: 8px; font-weight: 600; font-size: 0.9rem;">
+                        Beli Premium via Trakteer
+                    </a>
+                </div>
+                """, unsafe_allow_html=True)
+
         if st.button("Log Out", use_container_width=True):
             st.session_state.user_info = None
             st.rerun()
