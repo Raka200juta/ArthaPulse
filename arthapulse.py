@@ -1,3 +1,8 @@
+"""
+ArthaPulse — Dashboard Finansial Indonesia
+Versi: 2.0 (Penyempurnaan Menyeluruh)
+"""
+
 import streamlit as st
 import yfinance as yf
 import pandas as pd
@@ -6,47 +11,9 @@ import requests
 import firebase_admin
 from firebase_admin import credentials, firestore, auth
 import json
+import re
 
-if not firebase_admin._apps:
-    firebase_info = json.loads(st.secrets["firebase_json"])
-    cred = credentials.Certificate(firebase_info)
-    firebase_admin.initialize_app(cred)
-
-db = firestore.client()
-
-FIREBASE_WEB_API_KEY = "AIzaSyAbJ_CRg_VwXcO1Fd4oPSJlvLTRKLOyuRo"
-
-# State Manajemen Sesi Pengguna
-if "user_info" not in st.session_state:
-    st.session_state.user_info = None
-
-is_premium_user = False
-
-# Fungsi Verifikasi Login via REST API
-def login_user(email, password):
-    url = f"https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key={FIREBASE_WEB_API_KEY}"
-    payload = {"email": email, "password": password, "returnSecureToken": True}
-    response = requests.post(url, json=payload).json()
-    if "localId" in response:
-        return response["localId"]
-    return None
-
-# Fungsi Pendaftaran Pengguna Baru
-def register_user(email, password):
-    try:
-        user = auth.create_user(email=email, password=password)
-        # Set status awal pengguna sebagai akun Free di Firestore
-        db.collection("users").document(user.uid).set({"status": "Free"})
-        return True
-    except Exception as e:
-        st.sidebar.error(f"Gagal daftar: {str(e)}")
-        return False
-    
-# Simulasi status login pengguna (Default: Free Session)
-# Nantinya nilai ini berubah menjadi True setelah fungsi login berhasil diverifikasi
-is_premium_user = False
-
-# ─── KONFIGURASI HALAMAN ───────────────────────────────────────────────────────
+# ─── KONFIGURASI HALAMAN (harus paling awal) ──────────────────────────────────
 st.set_page_config(
     page_title="ArthaPulse — Dashboard Finansial",
     page_icon="📊",
@@ -54,115 +21,194 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
+# ─── INISIALISASI FIREBASE (sekali saja) ──────────────────────────────────────
+@st.cache_resource
+def init_firebase():
+    """Inisialisasi Firebase sekali saja dan kembalikan Firestore client."""
+    if not firebase_admin._apps:
+        firebase_info = json.loads(st.secrets["firebase_json"])
+        cred = credentials.Certificate(firebase_info)
+        firebase_admin.initialize_app(cred)
+    return firestore.client()
+
+try:
+    db = init_firebase()
+except Exception as e:
+    st.error(f"⚠️ Gagal menginisialisasi Firebase: {e}")
+    st.stop()
+
+FIREBASE_WEB_API_KEY = st.secrets.get("firebase_web_api_key", "AIzaSyAbJ_CRg_VwXcO1Fd4oPSJlvLTRKLOyuRo")
+
+# ─── SESSION STATE INITIALIZATION ─────────────────────────────────────────────
+def init_session_state():
+    defaults = {
+        "user_info": None,        # UID pengguna yang login
+        "user_status": "Free",    # Status akun: "Free" atau "Premium"
+        "auth_error": None,       # Pesan error autentikasi
+        "auth_success": None,     # Pesan sukses autentikasi
+    }
+    for key, val in defaults.items():
+        if key not in st.session_state:
+            st.session_state[key] = val
+
+init_session_state()
+
 # ─── CUSTOM CSS ───────────────────────────────────────────────────────────────
 st.markdown("""
 <style>
-    /* Font & Warna Dasar */
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Space+Grotesk:wght@500;700&display=swap');
 
-    html, body, [class*="css"] {
-        font-family: 'Inter', sans-serif;
-    }
+    html, body, [class*="css"] { font-family: 'Inter', sans-serif; }
 
-    /* Header Utama */
     .main-title {
         font-family: 'Space Grotesk', sans-serif;
-        font-size: 2.4rem;
-        font-weight: 700;
-        color: #0f172a;
-        letter-spacing: -0.5px;
-        margin-bottom: 0;
+        font-size: 2.4rem; font-weight: 700;
+        color: #0f172a; letter-spacing: -0.5px; margin-bottom: 0;
     }
     .main-subtitle {
-        color: #64748b;
-        font-size: 0.95rem;
-        margin-top: 4px;
-        margin-bottom: 1.5rem;
+        color: #64748b; font-size: 0.95rem;
+        margin-top: 4px; margin-bottom: 1.5rem;
     }
-
-    /* Kartu Sinyal */
     .signal-card {
         background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
-        border-radius: 14px;
-        padding: 20px 24px;
-        color: white;
-        margin-bottom: 12px;
+        border-radius: 14px; padding: 20px 24px;
+        color: white; margin-bottom: 12px;
     }
-    .signal-card .signal-label { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 1px; color: #94a3b8; }
-    .signal-card .signal-value { font-size: 1.9rem; font-weight: 700; font-family: 'Space Grotesk', sans-serif; }
+    .signal-card .signal-label {
+        font-size: 0.75rem; text-transform: uppercase;
+        letter-spacing: 1px; color: #94a3b8;
+    }
+    .signal-card .signal-value {
+        font-size: 1.9rem; font-weight: 700;
+        font-family: 'Space Grotesk', sans-serif;
+    }
     .signal-card .signal-delta-positive { color: #4ade80; font-size: 0.9rem; font-weight: 600; }
     .signal-card .signal-delta-negative { color: #f87171; font-size: 0.9rem; font-weight: 600; }
 
-    /* Badge Indikator Teknikal */
-    .badge-bullish { background: #dcfce7; color: #166534; padding: 3px 10px; border-radius: 20px; font-size: 0.78rem; font-weight: 600; }
-    .badge-bearish { background: #fee2e2; color: #991b1b; padding: 3px 10px; border-radius: 20px; font-size: 0.78rem; font-weight: 600; }
-    .badge-neutral { background: #fef9c3; color: #854d0e; padding: 3px 10px; border-radius: 20px; font-size: 0.78rem; font-weight: 600; }
+    .badge-bullish  { background: #dcfce7; color: #166534; padding: 3px 10px; border-radius: 20px; font-size: 0.78rem; font-weight: 600; }
+    .badge-bearish  { background: #fee2e2; color: #991b1b; padding: 3px 10px; border-radius: 20px; font-size: 0.78rem; font-weight: 600; }
+    .badge-neutral  { background: #fef9c3; color: #854d0e; padding: 3px 10px; border-radius: 20px; font-size: 0.78rem; font-weight: 600; }
 
-    /* Tabel Ringkasan */
     .summary-row { display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid #f1f5f9; font-size: 0.88rem; }
     .summary-label { color: #64748b; }
     .summary-value { font-weight: 600; color: #0f172a; }
 
-    /* Section Divider */
     .section-label {
         font-family: 'Space Grotesk', sans-serif;
-        font-size: 0.72rem;
-        font-weight: 700;
-        text-transform: uppercase;
-        letter-spacing: 2px;
-        color: #94a3b8;
-        margin: 1.5rem 0 0.5rem 0;
+        font-size: 0.72rem; font-weight: 700;
+        text-transform: uppercase; letter-spacing: 2px;
+        color: #94a3b8; margin: 1.5rem 0 0.5rem 0;
+    }
+    .premium-lock {
+        background: linear-gradient(135deg, #1e1b4b, #311042);
+        border: 1px solid #4c1d95; border-radius: 12px;
+        padding: 24px; text-align: center; color: #c084fc;
     }
 
-    /* Penyesuaian Sidebar */
     [data-testid="stSidebar"] { background: #0f172a; border-right: 1px solid #e2e8f0; }
-    [data-testid="stSidebar"] h1, [data-testid="stSidebar"] h2, [data-testid="stSidebar"] h3 {
-        font-family: 'Space Grotesk', sans-serif;
-    }
+    [data-testid="stSidebar"] h1,
+    [data-testid="stSidebar"] h2,
+    [data-testid="stSidebar"] h3 { font-family: 'Space Grotesk', sans-serif; }
 
-    /* Sembunyikan elemen default Streamlit */
-    #MainMenu {visibility: hidden;}
-    footer {visibility: hidden;}
+    #MainMenu { visibility: hidden; }
+    footer     { visibility: hidden; }
 
-    /* Membuat background header transparan tanpa menyembunyikan tombol sidebar mobile */
-    [data-testid="stHeader"] {
-        background-color: rgba(0, 0, 0, 0);
-    }
-            
-    /* Metric override */
+    [data-testid="stHeader"] { background-color: rgba(0,0,0,0); }
+
     [data-testid="metric-container"] {
-        background: #f8fafc;
-        border: 1px solid #e2e8f0;
-        border-radius: 10px;
-        padding: 14px 18px;
+        background: #f8fafc; border: 1px solid #e2e8f0;
+        border-radius: 10px; padding: 14px 18px;
     }
 </style>
 """, unsafe_allow_html=True)
 
 
-# ─── FUNGSI UTILITAS ───────────────────────────────────────────────────────────
-@st.cache_data(ttl=300)  # Cache 5 menit, otomatis refresh
-def load_financial_data(ticker_symbol: str, time_period: str) -> pd.DataFrame:
-    """Ambil data historis dari Yahoo Finance menggunakan custom session."""
+# ─── FUNGSI AUTENTIKASI ────────────────────────────────────────────────────────
+def is_valid_email(email: str) -> bool:
+    return bool(re.match(r"^[\w.+-]+@[\w-]+\.[a-zA-Z]{2,}$", email))
+
+
+def login_user(email: str, password: str) -> dict | None:
+    """Login via Firebase REST API. Kembalikan dict {uid, email} atau None."""
+    url = f"https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key={FIREBASE_WEB_API_KEY}"
     try:
-        # Membuat sesi buatan untuk mengelabui proteksi Yahoo Finance
+        resp = requests.post(url, json={"email": email, "password": password, "returnSecureToken": True}, timeout=10)
+        data = resp.json()
+        if "localId" in data:
+            return {"uid": data["localId"], "email": data["email"]}
+        error_msg = data.get("error", {}).get("message", "Kesalahan tidak diketahui")
+        return {"error": _translate_firebase_error(error_msg)}
+    except requests.exceptions.Timeout:
+        return {"error": "Koneksi timeout. Coba lagi."}
+    except Exception:
+        return {"error": "Gagal terhubung ke server autentikasi."}
+
+
+def register_user(email: str, password: str) -> dict:
+    """Daftarkan pengguna baru. Kembalikan dict {success: bool, error?: str}."""
+    try:
+        user = auth.create_user(email=email, password=password)
+        db.collection("users").document(user.uid).set({
+            "status": "Free",
+            "email": email,
+            "created_at": firestore.SERVER_TIMESTAMP,
+        })
+        return {"success": True}
+    except Exception as e:
+        err = str(e)
+        if "EMAIL_EXISTS" in err or "email-already-exists" in err:
+            return {"success": False, "error": "Email sudah terdaftar. Silakan login."}
+        if "WEAK_PASSWORD" in err or "weak-password" in err:
+            return {"success": False, "error": "Password terlalu lemah. Gunakan minimal 6 karakter."}
+        return {"success": False, "error": f"Pendaftaran gagal: {err}"}
+
+
+def _translate_firebase_error(msg: str) -> str:
+    mapping = {
+        "EMAIL_NOT_FOUND": "Email tidak terdaftar.",
+        "INVALID_PASSWORD": "Password salah.",
+        "INVALID_EMAIL": "Format email tidak valid.",
+        "USER_DISABLED": "Akun ini telah dinonaktifkan.",
+        "TOO_MANY_ATTEMPTS_TRY_LATER": "Terlalu banyak percobaan. Coba lagi nanti.",
+        "INVALID_LOGIN_CREDENTIALS": "Email atau password salah.",
+    }
+    for key, val in mapping.items():
+        if key in msg:
+            return val
+    return f"Login gagal: {msg}"
+
+
+@st.cache_data(ttl=60)
+def get_user_status(uid: str) -> str:
+    """Ambil status premium dari Firestore (cache 60 detik)."""
+    try:
+        doc = db.collection("users").document(uid).get()
+        return doc.to_dict().get("status", "Free") if doc.exists else "Free"
+    except Exception:
+        return "Free"
+
+
+# ─── FUNGSI DATA & INDIKATOR ───────────────────────────────────────────────────
+@st.cache_data(ttl=300, show_spinner=False)
+def load_financial_data(ticker_symbol: str, time_period: str) -> pd.DataFrame:
+    """Ambil data historis dari Yahoo Finance."""
+    try:
         session = requests.Session()
         session.headers.update({
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/120.0.0.0 Safari/537.36"
+            )
         })
-        
         ticker_data = yf.Ticker(ticker_symbol, session=session)
         df = ticker_data.history(period=time_period)
-        
-        if df.empty:
-            return pd.DataFrame()
-        return df
+        return df if not df.empty else pd.DataFrame()
     except Exception:
         return pd.DataFrame()
 
 
 def hitung_rsi(series: pd.Series, period: int = 14) -> pd.Series:
-    """Hitung Relative Strength Index (RSI)."""
     delta = series.diff()
     gain = delta.clip(lower=0).rolling(window=period).mean()
     loss = -delta.clip(upper=0).rolling(window=period).mean()
@@ -171,158 +217,190 @@ def hitung_rsi(series: pd.Series, period: int = 14) -> pd.Series:
 
 
 def hitung_bollinger(series: pd.Series, period: int = 20) -> tuple:
-    """Hitung Bollinger Bands."""
     sma = series.rolling(window=period).mean()
     std = series.rolling(window=period).std()
     return sma + 2 * std, sma, sma - 2 * std
 
 
 def hitung_macd(series: pd.Series) -> tuple:
-    """Hitung MACD dan sinyal."""
-    ema12 = series.ewm(span=12).mean()
-    ema26 = series.ewm(span=26).mean()
+    ema12 = series.ewm(span=12, adjust=False).mean()
+    ema26 = series.ewm(span=26, adjust=False).mean()
     macd = ema12 - ema26
-    signal = macd.ewm(span=9).mean()
+    signal = macd.ewm(span=9, adjust=False).mean()
     return macd, signal
 
 
-def format_idr(angka: float) -> str:
-    """Format angka ke format Rupiah."""
-    if angka >= 1_000_000_000_000:
-        return f"Rp {angka/1_000_000_000_000:.2f}T"
-    elif angka >= 1_000_000_000:
-        return f"Rp {angka/1_000_000_000:.2f}M"
-    else:
-        return f"Rp {angka:,.0f}"
-
-
 def sinyal_teknikal(df: pd.DataFrame) -> dict:
-    """Hasilkan ringkasan sinyal teknikal."""
-    close = df['Close']
+    close = df["Close"]
     rsi = hitung_rsi(close).iloc[-1]
     ma20 = close.rolling(20).mean().iloc[-1]
     ma50 = close.rolling(50).mean().iloc[-1]
-    macd, signal = hitung_macd(close)
-    macd_val = macd.iloc[-1]
-    signal_val = signal.iloc[-1]
-
-    tren = "Bullish" if ma20 > ma50 else "Bearish"
-    rsi_status = "Overbought" if rsi > 70 else ("Oversold" if rsi < 30 else "Normal")
-    macd_status = "Bullish" if macd_val > signal_val else "Bearish"
+    macd_val, signal_val = hitung_macd(close)
 
     return {
         "RSI": round(rsi, 2),
-        "RSI Status": rsi_status,
+        "RSI Status": "Overbought" if rsi > 70 else ("Oversold" if rsi < 30 else "Normal"),
         "MA20": round(ma20, 2),
         "MA50": round(ma50, 2),
-        "Tren MA": tren,
-        "MACD": round(macd_val, 4),
-        "MACD Status": macd_status,
+        "Tren MA": "Bullish" if ma20 > ma50 else "Bearish",
+        "MACD": round(macd_val.iloc[-1], 4),
+        "MACD Status": "Bullish" if macd_val.iloc[-1] > signal_val.iloc[-1] else "Bearish",
     }
 
 
 def warna_badge(status: str) -> str:
     if status in ("Bullish", "Oversold"):
         return "badge-bullish"
-    elif status in ("Bearish", "Overbought"):
+    if status in ("Bearish", "Overbought"):
         return "badge-bearish"
     return "badge-neutral"
+
+
+DAFTAR_SAHAM = {
+    "BBCA.JK": "BCA", "BBRI.JK": "BRI", "BMRI.JK": "Mandiri",
+    "BBNI.JK": "BNI", "TLKM.JK": "Telkom", "ASII.JK": "Astra",
+    "GOTO.JK": "GoTo", "UNVR.JK": "Unilever", "ADRO.JK": "Adaro",
+    "PGAS.JK": "PGN", "ANTM.JK": "Antam", "MDKA.JK": "Merdeka Copper",
+}
+
+PERIODE_LABEL = {
+    "1mo": "1 Bulan", "3mo": "3 Bulan",
+    "6mo": "6 Bulan", "1y": "1 Tahun", "2y": "2 Tahun",
+}
 
 
 # ─── SIDEBAR ──────────────────────────────────────────────────────────────────
 with st.sidebar:
     st.markdown('<p class="main-title" style="font-size:1.4rem;">📊 ArthaPulse</p>', unsafe_allow_html=True)
-    st.markdown('<p class="main-subtitle">Panel Kendali Analisis</p>', unsafe_allow_html=True)
+    st.markdown('<p class="main-subtitle" style="color:#94a3b8;">Panel Kendali Analisis</p>', unsafe_allow_html=True)
     st.divider()
 
+    # ── Panel Autentikasi ──
     if st.session_state.user_info is None:
         st.markdown("**🔐 Akses Akun**")
         menu_auth = st.radio("Pilih Aksi", ["Login", "Daftar"], horizontal=True, label_visibility="collapsed")
-        
-        auth_email = st.text_input("Email")
-        auth_password = st.text_input("Password", type="password")
-        
+
+        auth_email    = st.text_input("Email", placeholder="nama@email.com")
+        auth_password = st.text_input("Password", type="password", placeholder="Minimal 6 karakter")
+
+        # Tampilkan pesan error/sukses persisten
+        if st.session_state.auth_error:
+            st.error(st.session_state.auth_error)
+        if st.session_state.auth_success:
+            st.success(st.session_state.auth_success)
+
         if menu_auth == "Login":
-            if st.button("Masuk", use_container_width=True):
-                uid = login_user(auth_email, auth_password)
-                if uid:
-                    st.session_state.user_info = uid
-                    st.rerun()
+            if st.button("Masuk", use_container_width=True, type="primary"):
+                st.session_state.auth_error = None
+                st.session_state.auth_success = None
+
+                if not auth_email or not auth_password:
+                    st.session_state.auth_error = "Email dan password tidak boleh kosong."
+                elif not is_valid_email(auth_email):
+                    st.session_state.auth_error = "Format email tidak valid."
                 else:
-                    st.sidebar.error("Email atau Password salah.")
-        else:
-            if st.button("Buat Akun", use_container_width=True):
-                if register_user(auth_email, auth_password):
-                    st.sidebar.success("Akun berhasil dibuat! Silakan login.")
+                    with st.spinner("Memverifikasi..."):
+                        result = login_user(auth_email, auth_password)
+                    if result and "uid" in result:
+                        st.session_state.user_info   = result["uid"]
+                        st.session_state.user_status = get_user_status(result["uid"])
+                        st.session_state.auth_error  = None
+                        st.rerun()
+                    else:
+                        st.session_state.auth_error = result.get("error", "Login gagal.") if result else "Login gagal."
+                st.rerun()
+
+        else:  # Daftar
+            if st.button("Buat Akun", use_container_width=True, type="primary"):
+                st.session_state.auth_error   = None
+                st.session_state.auth_success = None
+
+                if not auth_email or not auth_password:
+                    st.session_state.auth_error = "Email dan password tidak boleh kosong."
+                elif not is_valid_email(auth_email):
+                    st.session_state.auth_error = "Format email tidak valid."
+                elif len(auth_password) < 6:
+                    st.session_state.auth_error = "Password minimal 6 karakter."
+                else:
+                    with st.spinner("Mendaftarkan akun..."):
+                        result = register_user(auth_email, auth_password)
+                    if result["success"]:
+                        st.session_state.auth_success = "✅ Akun berhasil dibuat! Silakan login."
+                    else:
+                        st.session_state.auth_error = result.get("error", "Pendaftaran gagal.")
+                st.rerun()
+
     else:
-        # Ambil data status premium dari Firestore secara real-time
-        user_doc = db.collection("users").document(st.session_state.user_info).get()
-        user_status = user_doc.to_dict().get("status", "Free") if user_doc.exists else "Free"
-        
-        if user_status == "Premium":
-            is_premium_user = True
-            st.success(f"✨ Akun Premium Aktif")
+        # ── Pengguna Sudah Login ──
+        # Refresh status dari Firestore (di-cache 60 detik)
+        st.session_state.user_status = get_user_status(st.session_state.user_info)
+        is_premium = st.session_state.user_status == "Premium"
+
+        if is_premium:
+            st.success("✨ Akun Premium Aktif")
         else:
-            st.info(f"Status Akun: Free Member")
-            
+            st.info("Status Akun: Free Member")
             with st.expander("🚀 Upgrade ke Premium"):
                 st.markdown("""
-                <div style="background: linear-gradient(135deg, #1e1b4b 0%, #311042 100%);
-                            padding: 20px; border-radius: 12px; border: 1px solid #4c1d95; text-align: center;">
-                    <h4 style="color: #c084fc; margin-top: 0; font-family: 'Space Grotesk', sans-serif;">PRO PLAN</h4>
-                    <div style="font-size: 1.8rem; font-weight: 700; color: #f8fafc; margin: 10px 0;">
-                        Rp 49.000 <span style="font-size: 0.8rem; color: #94a3b8; font-weight: 400;">/ bulan</span>
+                <div style="background:linear-gradient(135deg,#1e1b4b 0%,#311042 100%);
+                            padding:20px;border-radius:12px;border:1px solid #4c1d95;text-align:center;">
+                    <h4 style="color:#c084fc;margin-top:0;font-family:'Space Grotesk',sans-serif;">PRO PLAN</h4>
+                    <div style="font-size:1.8rem;font-weight:700;color:#f8fafc;margin:10px 0;">
+                        Rp 49.000
+                        <span style="font-size:0.8rem;color:#94a3b8;font-weight:400;">/ bulan</span>
                     </div>
-                    <ul style="text-align: left; color: #cbd5e1; font-size: 0.85rem; padding-left: 20px; margin-bottom: 20px;">
-                        <li>Analisis Saham Tanpa Batas ( > 2 Saham)</li>
-                        <li>Akses Fitur Grafik Kinerja Relatif</li>
-                        <li>Akses Matriks Korelasi Antar Saham</li>
-                        <li>Sinyal Indikator Makro Lebih Cepat</li>
+                    <ul style="text-align:left;color:#cbd5e1;font-size:0.85rem;padding-left:20px;margin-bottom:20px;">
+                        <li>Analisis Saham Tanpa Batas (&gt; 2 Saham)</li>
+                        <li>Grafik Kinerja Relatif &amp; Return Harian</li>
+                        <li>Matriks Korelasi Antar Saham</li>
+                        <li>Indikator Makro Lebih Cepat</li>
                     </ul>
-                    <a href="https://trakteer.id/r4kiya/shop" 
-                       target="_blank" 
-                       style="display: block; background: #7c3aed; color: white; text-decoration: none; 
-                              padding: 10px; border-radius: 8px; font-weight: 600; font-size: 0.9rem;">
+                    <a href="https://trakteer.id/r4kiya/shop" target="_blank"
+                       style="display:block;background:#7c3aed;color:white;text-decoration:none;
+                              padding:10px;border-radius:8px;font-weight:600;font-size:0.9rem;">
                         Beli Premium via Trakteer
                     </a>
                 </div>
                 """, unsafe_allow_html=True)
 
         if st.button("Log Out", use_container_width=True):
-            st.session_state.user_info = None
+            # Bersihkan semua session state
+            for key in list(st.session_state.keys()):
+                del st.session_state[key]
+            init_session_state()
             st.rerun()
-            
+
     st.divider()
 
+    # ── Pengaturan Tampilan ──
     st.markdown("**⏱ Periode Data**")
     periode = st.selectbox(
         label="Periode",
-        options=["1mo", "3mo", "6mo", "1y", "2y"],
+        options=list(PERIODE_LABEL.keys()),
         index=1,
-        format_func=lambda x: {"1mo": "1 Bulan", "3mo": "3 Bulan", "6mo": "6 Bulan", "1y": "1 Tahun", "2y": "2 Tahun"}[x],
-        label_visibility="collapsed"
+        format_func=lambda x: PERIODE_LABEL[x],
+        label_visibility="collapsed",
     )
 
-    st.markdown("**📋 Tampilan**")
-    tampilkan_bb = st.toggle("Bollinger Bands", value=True)
-    tampilkan_ma = st.toggle("Moving Average (MA20 & MA50)", value=True)
-    tampilkan_rsi = st.toggle("Panel RSI", value=True)
+    st.markdown("**📋 Tampilan Indikator**")
+    tampilkan_bb   = st.toggle("Bollinger Bands", value=True)
+    tampilkan_ma   = st.toggle("Moving Average (MA20 & MA50)", value=True)
+    tampilkan_rsi  = st.toggle("Panel RSI", value=True)
     tampilkan_macd = st.toggle("Panel MACD", value=False)
 
     st.divider()
     st.markdown("**🏦 Pilih Saham IDX**")
-    daftar_saham = {
-        "BBCA.JK": "BCA", "BBRI.JK": "BRI", "BMRI.JK": "Mandiri",
-        "BBNI.JK": "BNI", "TLKM.JK": "Telkom", "ASII.JK": "Astra",
-        "GOTO.JK": "GoTo", "UNVR.JK": "Unilever", "ADRO.JK": "Adaro",
-        "PGAS.JK": "PGN", "ANTM.JK": "Antam", "MDKA.JK": "Merdeka Copper",
-    }
+
+    # Tentukan apakah pengguna premium (aman dari duplikasi)
+    is_premium_user = st.session_state.get("user_status") == "Premium"
+
+    saham_default = ["BBCA.JK", "BBRI.JK", "TLKM.JK"]
     saham_pilihan = st.multiselect(
         label="Saham",
-        options=list(daftar_saham.keys()),
-        default=["BBCA.JK", "BBRI.JK", "TLKM.JK"],
-        format_func=lambda x: f"{daftar_saham[x]} ({x})",
-        label_visibility="collapsed"
+        options=list(DAFTAR_SAHAM.keys()),
+        default=saham_default,
+        format_func=lambda x: f"{DAFTAR_SAHAM[x]} ({x})",
+        label_visibility="collapsed",
     )
 
     st.divider()
@@ -330,44 +408,53 @@ with st.sidebar:
         st.cache_data.clear()
         st.rerun()
 
-    st.caption("Data bersumber dari Yahoo Finance. Diperbarui setiap 5 menit.")
+    st.caption("Data dari Yahoo Finance. Diperbarui setiap 5 menit.")
 
 
 # ─── HEADER UTAMA ─────────────────────────────────────────────────────────────
 st.markdown('<h1 class="main-title">📊 ArthaPulse</h1>', unsafe_allow_html=True)
-st.markdown('<p class="main-subtitle">Analisis Real-Time USD/IDR · IHSG · Saham Pilihan — Pasar Indonesia</p>', unsafe_allow_html=True)
+st.markdown(
+    '<p class="main-subtitle">Analisis Real-Time USD/IDR · IHSG · Saham Pilihan — Pasar Indonesia</p>',
+    unsafe_allow_html=True
+)
 
-# ─── AMBIL DATA UTAMA ─────────────────────────────────────────────────────────
+# ─── MUAT DATA UTAMA ──────────────────────────────────────────────────────────
 with st.spinner("Memuat data pasar..."):
-    data_usd = load_financial_data("IDR=X", periode)
+    data_usd  = load_financial_data("IDR=X", periode)
     data_ihsg = load_financial_data("^JKSE", periode)
 
 if data_usd.empty or data_ihsg.empty:
-    st.error("⚠️ Gagal memuat data. Periksa koneksi internet atau coba lagi dalam beberapa saat.")
+    st.error(
+        "⚠️ Gagal memuat data pasar. "
+        "Periksa koneksi internet atau coba tekan **Refresh Data** di sidebar."
+    )
     st.stop()
 
-# ─── SEKSI 1: RINGKASAN PASAR (KARTU ATAS) ────────────────────────────────────
+
+# ─── SEKSI 1: RINGKASAN PASAR ─────────────────────────────────────────────────
 st.markdown('<p class="section-label">📡 Ringkasan Pasar Hari Ini</p>', unsafe_allow_html=True)
 
 col1, col2, col3, col4 = st.columns(4)
 
-usd_kini = data_usd['Close'].iloc[-1]
-usd_lalu = data_usd['Close'].iloc[-2]
+usd_kini  = data_usd["Close"].iloc[-1]
+usd_lalu  = data_usd["Close"].iloc[-2]
 delta_usd = usd_kini - usd_lalu
-pct_usd = (delta_usd / usd_lalu) * 100
+pct_usd   = (delta_usd / usd_lalu) * 100
 
-ihsg_kini = data_ihsg['Close'].iloc[-1]
-ihsg_lalu = data_ihsg['Close'].iloc[-2]
+ihsg_kini  = data_ihsg["Close"].iloc[-1]
+ihsg_lalu  = data_ihsg["Close"].iloc[-2]
 delta_ihsg = ihsg_kini - ihsg_lalu
-pct_ihsg = (delta_ihsg / ihsg_lalu) * 100
+pct_ihsg   = (delta_ihsg / ihsg_lalu) * 100
 
-ihsg_high = data_ihsg['High'].iloc[-1]
-ihsg_low = data_ihsg['Low'].iloc[-1]
-ihsg_vol = data_ihsg['Volume'].iloc[-1] if 'Volume' in data_ihsg.columns else 0
+ihsg_high = data_ihsg["High"].iloc[-1]
+ihsg_low  = data_ihsg["Low"].iloc[-1]
+usd_high  = data_usd["High"].max()
+usd_low   = data_usd["Low"].min()
 
 with col1:
     tanda = "▲" if delta_usd > 0 else "▼"
-    kelas = "signal-delta-negative" if delta_usd > 0 else "signal-delta-positive"  # IDR melemah = negatif
+    # IDR melemah (USD naik) = negatif untuk investor
+    kelas = "signal-delta-negative" if delta_usd > 0 else "signal-delta-positive"
     st.markdown(f"""
     <div class="signal-card">
         <div class="signal-label">Kurs USD / IDR</div>
@@ -394,264 +481,293 @@ with col3:
     </div>""", unsafe_allow_html=True)
 
 with col4:
-    usd_high = data_usd['High'].max()
-    usd_low = data_usd['Low'].min()
-    
-    # Solusi: Pindahkan kamus teks ke variabel luar untuk menghindari bentrokan f-string
-    periode_label = {"1mo": "1 Bln", "3mo": "3 Bln", "6mo": "6 Bln", "1y": "1 Thn", "2y": "2 Thn"}.get(periode, periode)
-    
+    periode_label_short = {"1mo": "1 Bln", "3mo": "3 Bln", "6mo": "6 Bln", "1y": "1 Thn", "2y": "2 Thn"}.get(periode, periode)
     st.markdown(f"""
     <div class="signal-card">
-        <div class="signal-label">USD/IDR — Range {periode_label}</div>
+        <div class="signal-label">USD/IDR — Range {periode_label_short}</div>
         <div class="signal-value" style="font-size:1.3rem;">Rp {usd_low:,.0f}</div>
         <div class="signal-delta-positive">Terkuat ↑ Rp {usd_high:,.0f}</div>
     </div>""", unsafe_allow_html=True)
 
-# ─── SEKSI 2: GRAFIK USD/IDR DAN IHSG BERDAMPINGAN ───────────────────────────
+
+# ─── FUNGSI HELPER: PANEL GRAFIK ──────────────────────────────────────────────
+def render_chart_panel(df: pd.DataFrame, label: str, is_idr: bool = False):
+    """Render grafik harga + indikator opsional."""
+    col_grafik, col_analisis = st.columns([2, 1])
+
+    with col_grafik:
+        df_plot = pd.DataFrame({label: df["Close"]})
+        if tampilkan_ma:
+            df_plot["MA20"] = df["Close"].rolling(20).mean()
+            df_plot["MA50"] = df["Close"].rolling(50).mean()
+        if tampilkan_bb:
+            bb_up, _, bb_low = hitung_bollinger(df["Close"])
+            df_plot["BB Atas"]  = bb_up
+            df_plot["BB Bawah"] = bb_low
+
+        st.line_chart(
+            df_plot.dropna(), height=320,
+            color=["#29b5e8", "#f59e0b", "#10b981", "#ef4444", "#6366f1"]
+        )
+
+        if tampilkan_rsi:
+            rsi_s = hitung_rsi(df["Close"])
+            st.caption("RSI (14 periode) — Overbought >70 | Oversold <30")
+            st.line_chart(pd.DataFrame({"RSI": rsi_s}).dropna(), height=120, color=["#a855f7"])
+
+        if tampilkan_macd:
+            macd_s, signal_s = hitung_macd(df["Close"])
+            st.caption("MACD (12,26,9)")
+            st.line_chart(
+                pd.DataFrame({"MACD": macd_s, "Signal": signal_s}).dropna(),
+                height=120, color=["#3b82f6", "#f97316"]
+            )
+
+    with col_analisis:
+        sinyal = sinyal_teknikal(df)
+        harga_fmt = (
+            f"Rp {sinyal['MA20']:,.0f}" if is_idr else f"{sinyal['MA20']:,.2f}"
+        )
+        ma50_fmt = (
+            f"Rp {sinyal['MA50']:,.0f}" if is_idr else f"{sinyal['MA50']:,.2f}"
+        )
+
+        st.markdown(f"**🔍 Analisis Teknikal {label}**")
+        st.markdown(f"""
+        <div style="background:#f8fafc;border-radius:12px;padding:16px;border:1px solid #e2e8f0;">
+            <div class="summary-row">
+                <span class="summary-label">RSI (14)</span>
+                <span class="summary-value">
+                    {sinyal['RSI']} —
+                    <span class="{warna_badge(sinyal['RSI Status'])}">{sinyal['RSI Status']}</span>
+                </span>
+            </div>
+            <div class="summary-row">
+                <span class="summary-label">Tren MA</span>
+                <span class="summary-value">
+                    <span class="{warna_badge(sinyal['Tren MA'])}">{sinyal['Tren MA']}</span>
+                </span>
+            </div>
+            <div class="summary-row">
+                <span class="summary-label">MA 20</span>
+                <span class="summary-value">{harga_fmt}</span>
+            </div>
+            <div class="summary-row">
+                <span class="summary-label">MA 50</span>
+                <span class="summary-value">{ma50_fmt}</span>
+            </div>
+            <div class="summary-row">
+                <span class="summary-label">MACD</span>
+                <span class="summary-value">
+                    <span class="{warna_badge(sinyal['MACD Status'])}">{sinyal['MACD Status']}</span>
+                </span>
+            </div>
+            <div class="summary-row" style="border-bottom:none;">
+                <span class="summary-label">Volatilitas</span>
+                <span class="summary-value">{df['Close'].pct_change().std()*100:.2f}%</span>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        st.markdown("<br>", unsafe_allow_html=True)
+        st.markdown("**📊 Statistik Periode**")
+        fmt = "Rp {:,.0f}" if is_idr else "{:,.2f}"
+        st.dataframe(
+            pd.DataFrame({
+                "": ["Tertinggi", "Terendah", "Rata-rata", "Median", "Std Dev"],
+                "Nilai": [
+                    fmt.format(df["Close"].max()),
+                    fmt.format(df["Close"].min()),
+                    fmt.format(df["Close"].mean()),
+                    fmt.format(df["Close"].median()),
+                    fmt.format(df["Close"].std()),
+                ],
+            }).set_index(""),
+            use_container_width=True,
+            height=212,
+        )
+
+
+# ─── SEKSI 2: GRAFIK USD/IDR & IHSG ──────────────────────────────────────────
 st.markdown('<p class="section-label">📈 Grafik Pergerakan Harga</p>', unsafe_allow_html=True)
 
 tab_usd_chart, tab_ihsg_chart = st.tabs(["💵 USD / IDR", "📊 IHSG"])
 
 with tab_usd_chart:
-    col_grafik, col_analisis = st.columns([2, 1])
-
-    with col_grafik:
-        df_usd_plot = pd.DataFrame({"Harga (IDR)": data_usd['Close']})
-        if tampilkan_ma:
-            df_usd_plot['MA20'] = data_usd['Close'].rolling(20).mean()
-            df_usd_plot['MA50'] = data_usd['Close'].rolling(50).mean()
-        if tampilkan_bb:
-            bb_up, bb_mid, bb_low = hitung_bollinger(data_usd['Close'])
-            df_usd_plot['BB Atas'] = bb_up
-            df_usd_plot['BB Bawah'] = bb_low
-        st.line_chart(df_usd_plot.dropna(), height=320, color=["#29b5e8", "#f59e0b", "#10b981", "#ef4444", "#6366f1"])
-
-        if tampilkan_rsi:
-            rsi_usd = hitung_rsi(data_usd['Close'])
-            df_rsi = pd.DataFrame({"RSI": rsi_usd})
-            st.caption("Indikator RSI (14 periode) — Overbought >70 | Oversold <30")
-            st.line_chart(df_rsi.dropna(), height=120, color=["#a855f7"])
-
-        if tampilkan_macd:
-            macd, signal = hitung_macd(data_usd['Close'])
-            df_macd = pd.DataFrame({"MACD": macd, "Signal": signal})
-            st.caption("Indikator MACD")
-            st.line_chart(df_macd.dropna(), height=120, color=["#3b82f6", "#f97316"])
-
-    with col_analisis:
-        sinyal = sinyal_teknikal(data_usd)
-        st.markdown("**🔍 Analisis Teknikal USD/IDR**")
-        st.markdown(f"""
-        <div style="background:#f8fafc;border-radius:12px;padding:16px;border:1px solid #e2e8f0;">
-            <div class="summary-row"><span class="summary-label">RSI (14)</span><span class="summary-value">{sinyal['RSI']} — <span class="{warna_badge(sinyal['RSI Status'])}">{sinyal['RSI Status']}</span></span></div>
-            <div class="summary-row"><span class="summary-label">Tren MA</span><span class="summary-value"><span class="{warna_badge(sinyal['Tren MA'])}">{sinyal['Tren MA']}</span></span></div>
-            <div class="summary-row"><span class="summary-label">MA 20</span><span class="summary-value">Rp {sinyal['MA20']:,.0f}</span></div>
-            <div class="summary-row"><span class="summary-label">MA 50</span><span class="summary-value">Rp {sinyal['MA50']:,.0f}</span></div>
-            <div class="summary-row"><span class="summary-label">MACD</span><span class="summary-value"><span class="{warna_badge(sinyal['MACD Status'])}">{sinyal['MACD Status']}</span></span></div>
-            <div class="summary-row" style="border-bottom:none;"><span class="summary-label">Volatilitas</span><span class="summary-value">{data_usd['Close'].pct_change().std()*100:.2f}%</span></div>
-        </div>
-        """, unsafe_allow_html=True)
-
-        st.markdown("<br>", unsafe_allow_html=True)
-        st.markdown("**📊 Statistik Periode**")
-        st.dataframe(
-            pd.DataFrame({
-                "": ["Tertinggi", "Terendah", "Rata-rata", "Median", "Std Dev"],
-                "Nilai (Rp)": [
-                    f"{data_usd['Close'].max():,.0f}",
-                    f"{data_usd['Close'].min():,.0f}",
-                    f"{data_usd['Close'].mean():,.0f}",
-                    f"{data_usd['Close'].median():,.0f}",
-                    f"{data_usd['Close'].std():,.0f}",
-                ]
-            }).set_index(""),
-            use_container_width=True,
-            height=212
-        )
+    render_chart_panel(data_usd, "Harga (IDR)", is_idr=True)
 
 with tab_ihsg_chart:
-    col_grafik2, col_analisis2 = st.columns([2, 1])
+    render_chart_panel(data_ihsg, "IHSG", is_idr=False)
 
-    with col_grafik2:
-        df_ihsg_plot = pd.DataFrame({"IHSG": data_ihsg['Close']})
-        if tampilkan_ma:
-            df_ihsg_plot['MA20'] = data_ihsg['Close'].rolling(20).mean()
-            df_ihsg_plot['MA50'] = data_ihsg['Close'].rolling(50).mean()
-        if tampilkan_bb:
-            bb_up, bb_mid, bb_low = hitung_bollinger(data_ihsg['Close'])
-            df_ihsg_plot['BB Atas'] = bb_up
-            df_ihsg_plot['BB Bawah'] = bb_low
-        st.line_chart(df_ihsg_plot.dropna(), height=320, color=["#29e889", "#f59e0b", "#10b981", "#ef4444", "#6366f1"])
 
-        if tampilkan_rsi:
-            rsi_ihsg = hitung_rsi(data_ihsg['Close'])
-            df_rsi_ihsg = pd.DataFrame({"RSI": rsi_ihsg})
-            st.caption("Indikator RSI (14 periode)")
-            st.line_chart(df_rsi_ihsg.dropna(), height=120, color=["#a855f7"])
-
-        if tampilkan_macd:
-            macd_i, signal_i = hitung_macd(data_ihsg['Close'])
-            df_macd_i = pd.DataFrame({"MACD": macd_i, "Signal": signal_i})
-            st.caption("Indikator MACD")
-            st.line_chart(df_macd_i.dropna(), height=120, color=["#3b82f6", "#f97316"])
-
-    with col_analisis2:
-        sinyal_i = sinyal_teknikal(data_ihsg)
-        st.markdown("**🔍 Analisis Teknikal IHSG**")
-        st.markdown(f"""
-        <div style="background:#f8fafc;border-radius:12px;padding:16px;border:1px solid #e2e8f0;">
-            <div class="summary-row"><span class="summary-label">RSI (14)</span><span class="summary-value">{sinyal_i['RSI']} — <span class="{warna_badge(sinyal_i['RSI Status'])}">{sinyal_i['RSI Status']}</span></span></div>
-            <div class="summary-row"><span class="summary-label">Tren MA</span><span class="summary-value"><span class="{warna_badge(sinyal_i['Tren MA'])}">{sinyal_i['Tren MA']}</span></span></div>
-            <div class="summary-row"><span class="summary-label">MA 20</span><span class="summary-value">{sinyal_i['MA20']:,.2f}</span></div>
-            <div class="summary-row"><span class="summary-label">MA 50</span><span class="summary-value">{sinyal_i['MA50']:,.2f}</span></div>
-            <div class="summary-row"><span class="summary-label">MACD</span><span class="summary-value"><span class="{warna_badge(sinyal_i['MACD Status'])}">{sinyal_i['MACD Status']}</span></span></div>
-            <div class="summary-row" style="border-bottom:none;"><span class="summary-label">Volatilitas</span><span class="summary-value">{data_ihsg['Close'].pct_change().std()*100:.2f}%</span></div>
-        </div>
-        """, unsafe_allow_html=True)
-
-        st.markdown("<br>", unsafe_allow_html=True)
-        st.markdown("**📊 Statistik Periode**")
-        st.dataframe(
-            pd.DataFrame({
-                "": ["Tertinggi", "Terendah", "Rata-rata", "Median", "Std Dev"],
-                "Nilai": [
-                    f"{data_ihsg['Close'].max():,.2f}",
-                    f"{data_ihsg['Close'].min():,.2f}",
-                    f"{data_ihsg['Close'].mean():,.2f}",
-                    f"{data_ihsg['Close'].median():,.2f}",
-                    f"{data_ihsg['Close'].std():,.2f}",
-                ]
-            }).set_index(""),
-            use_container_width=True,
-            height=212
-        )
-
-# ─── SEKSI 3: ANALISIS SAHAM PILIHAN ──────────────────────────────────────────
+# ─── SEKSI 3: ANALISIS SAHAM ──────────────────────────────────────────────────
 st.markdown('<p class="section-label">🏦 Portofolio Saham Pilihan</p>', unsafe_allow_html=True)
 
-# Aturan Paywall: Pengguna free dibatasi maksimal 2 saham
-if not is_premium_user and len(saham_pilihan) > 2:
-    st.warning("🔒 **Fitur Premium Aktif:** Pengguna akun gratis hanya dapat menganalisis maksimal 2 saham secara bersamaan. Silakan upgrade ke Premium untuk membuka batasan.")
-    saham_pilihan = saham_pilihan[:2]  # Potong paksa akses hanya untuk 2 saham pertama
+# ── Paywall: batas 2 saham untuk Free ──
+MAX_FREE_SAHAM = 2
+if not is_premium_user and len(saham_pilihan) > MAX_FREE_SAHAM:
+    st.warning(
+        f"🔒 **Batas Akun Free:** Hanya {MAX_FREE_SAHAM} saham yang dapat dianalisis secara bersamaan. "
+        "Upgrade ke **Premium** untuk membuka semua saham.",
+        icon="🔒"
+    )
+    saham_pilihan = saham_pilihan[:MAX_FREE_SAHAM]
 
 if not saham_pilihan:
-    st.info("Pilih minimal satu saham di sidebar untuk memulai analisis saham.", icon="ℹ️")
+    st.info("Pilih minimal satu saham di sidebar untuk memulai analisis.", icon="ℹ️")
 else:
-    # Muat semua data saham
-    data_saham_dict = {}
+    data_saham_dict: dict[str, pd.DataFrame] = {}
+    tickers_gagal: list[str] = []
+
     with st.spinner("Memuat data saham..."):
         for ticker in saham_pilihan:
             df = load_financial_data(ticker, periode)
             if not df.empty:
                 data_saham_dict[ticker] = df
+            else:
+                tickers_gagal.append(ticker)
+
+    if tickers_gagal:
+        st.warning(f"⚠️ Gagal memuat data untuk: {', '.join(tickers_gagal)}. Data lainnya tetap ditampilkan.")
 
     if not data_saham_dict:
-        st.error("Tidak dapat memuat data saham yang dipilih.")
+        st.error("Tidak dapat memuat data saham yang dipilih. Coba refresh.")
     else:
-        # ── Tabel Ringkasan Saham ──
+        # ── Tabel Ringkasan ──
         ringkasan = []
         for ticker, df in data_saham_dict.items():
-            harga_kini = df['Close'].iloc[-1]
-            harga_lalu = df['Close'].iloc[-2]
+            harga_kini = df["Close"].iloc[-1]
+            harga_lalu = df["Close"].iloc[-2]
             chg = harga_kini - harga_lalu
             pct = (chg / harga_lalu) * 100
-            high52 = df['High'].max()
-            low52 = df['Low'].min()
             sinyal_s = sinyal_teknikal(df)
             ringkasan.append({
-                "Saham": f"{daftar_saham.get(ticker, ticker)} ({ticker.replace('.JK','')})",
+                "Saham": f"{DAFTAR_SAHAM.get(ticker, ticker)} ({ticker.replace('.JK', '')})",
                 "Harga (Rp)": f"{harga_kini:,.0f}",
                 "Perubahan": f"{chg:+,.0f}",
                 "% Ubah": f"{pct:+.2f}%",
-                "Tertinggi": f"{high52:,.0f}",
-                "Terendah": f"{low52:,.0f}",
-                "RSI": sinyal_s['RSI'],
-                "Tren": sinyal_s['Tren MA'],
-                "MACD": sinyal_s['MACD Status'],
+                "52W High": f"{df['High'].max():,.0f}",
+                "52W Low": f"{df['Low'].min():,.0f}",
+                "RSI": sinyal_s["RSI"],
+                "Tren": sinyal_s["Tren MA"],
+                "MACD": sinyal_s["MACD Status"],
             })
 
         df_ringkasan = pd.DataFrame(ringkasan).set_index("Saham")
         st.dataframe(df_ringkasan, use_container_width=True, height=min(200 + 38 * len(ringkasan), 500))
 
-        # ── Grafik Perbandingan (Normalisasi 100) ──
+        # ── Grafik Perbandingan ──
         st.markdown("<br>", unsafe_allow_html=True)
         col_g1, col_g2 = st.columns([3, 1])
 
         with col_g1:
-            tab_nominal, tab_normalized, tab_return = st.tabs(["Harga Absolut", "Performa Relatif (Base=100)", "Return Harian (%)"])
+            if is_premium_user:
+                tab_nominal, tab_normalized, tab_return = st.tabs([
+                    "Harga Absolut", "Performa Relatif (Base=100)", "Return Harian (%)"
+                ])
 
-            with tab_nominal:
-                df_harga = pd.DataFrame({t: d['Close'] for t, d in data_saham_dict.items()})
+                with tab_nominal:
+                    df_harga = pd.DataFrame({t: d["Close"] for t, d in data_saham_dict.items()})
+                    st.line_chart(df_harga, height=300)
+
+                with tab_normalized:
+                    df_norm = pd.DataFrame({
+                        t: (d["Close"] / d["Close"].iloc[0]) * 100
+                        for t, d in data_saham_dict.items()
+                    })
+                    st.caption("Nilai 100 = harga awal periode. Di atas 100 = saham naik.")
+                    st.line_chart(df_norm, height=300)
+
+                with tab_return:
+                    df_ret = pd.DataFrame({
+                        t: d["Close"].pct_change() * 100
+                        for t, d in data_saham_dict.items()
+                    })
+                    st.caption("Return harian (%). Volatilitas tinggi = batang lebih besar.")
+                    st.line_chart(df_ret.dropna(), height=300)
+            else:
+                # Tampilkan harga absolut saja untuk Free
+                df_harga = pd.DataFrame({t: d["Close"] for t, d in data_saham_dict.items()})
                 st.line_chart(df_harga, height=300)
 
-            with tab_normalized:
-                df_norm = pd.DataFrame({t: (d['Close'] / d['Close'].iloc[0]) * 100 for t, d in data_saham_dict.items()})
-                st.caption("Nilai 100 = harga awal periode. Di atas 100 berarti saham naik sejak awal periode.")
-                st.line_chart(df_norm, height=300)
-
-            with tab_return:
-                df_ret = pd.DataFrame({t: d['Close'].pct_change() * 100 for t, d in data_saham_dict.items()})
-                st.caption("Return harian dalam persen (%). Volatilitas tinggi = batang yang lebih tinggi.")
-                st.line_chart(df_ret.dropna(), height=300)
+                st.markdown("""
+                <div class="premium-lock" style="margin-top:8px;padding:14px;font-size:0.85rem;">
+                    🔒 <b>Grafik Performa Relatif &amp; Return Harian</b> tersedia di akun Premium.
+                </div>""", unsafe_allow_html=True)
 
         with col_g2:
             st.markdown("**📈 Return Kumulatif**")
             for ticker, df in data_saham_dict.items():
-                ret_total = ((df['Close'].iloc[-1] / df['Close'].iloc[0]) - 1) * 100
-                nama = daftar_saham.get(ticker, ticker)
+                ret_total = ((df["Close"].iloc[-1] / df["Close"].iloc[0]) - 1) * 100
+                nama  = DAFTAR_SAHAM.get(ticker, ticker)
                 warna = "#4ade80" if ret_total >= 0 else "#f87171"
                 tanda = "▲" if ret_total >= 0 else "▼"
                 st.markdown(f"""
                 <div style="display:flex;justify-content:space-between;align-items:center;
-                            padding:10px 14px;background: #0f172a;border-radius:10px;
+                            padding:10px 14px;background:#0f172a;border-radius:10px;
                             margin-bottom:8px;border:1px solid #1e293b;">
-                    <span style="font-weight:600;font-size:0.85rem;">{nama}</span>
+                    <span style="font-weight:600;font-size:0.85rem;color:#f8fafc;">{nama}</span>
                     <span style="color:{warna};font-weight:700;font-size:0.9rem;">{tanda} {abs(ret_total):.2f}%</span>
                 </div>""", unsafe_allow_html=True)
 
-        # ── Korelasi Antar Saham (jika >1 saham) ──
+        # ── Matriks Korelasi (Premium only) ──
         if len(data_saham_dict) > 1:
             st.markdown("<br>", unsafe_allow_html=True)
-            with st.expander("🔗 Lihat Matriks Korelasi Antar Saham"):
-                df_close = pd.DataFrame({t: d['Close'] for t, d in data_saham_dict.items()})
-                df_corr = df_close.pct_change().corr().round(2)
-                df_corr.columns = [daftar_saham.get(c, c) for c in df_corr.columns]
-                df_corr.index = [daftar_saham.get(i, i) for i in df_corr.index]
-                st.caption("Nilai mendekati 1.0 = bergerak searah. Nilai mendekati -1.0 = bergerak berlawanan.")
-                st.dataframe(df_corr.style.background_gradient(cmap="RdYlGn", vmin=-1, vmax=1), use_container_width=True)
+            if is_premium_user:
+                with st.expander("🔗 Lihat Matriks Korelasi Antar Saham"):
+                    df_close = pd.DataFrame({t: d["Close"] for t, d in data_saham_dict.items()})
+                    df_corr  = df_close.pct_change().corr().round(2)
+                    df_corr.columns = [DAFTAR_SAHAM.get(c, c) for c in df_corr.columns]
+                    df_corr.index   = [DAFTAR_SAHAM.get(i, i) for i in df_corr.index]
+                    st.caption("Mendekati 1.0 = bergerak searah · Mendekati -1.0 = berlawanan arah")
+                    st.dataframe(
+                        df_corr.style.background_gradient(cmap="RdYlGn", vmin=-1, vmax=1),
+                        use_container_width=True,
+                    )
+            else:
+                st.markdown("""
+                <div class="premium-lock">
+                    🔒 <b>Matriks Korelasi Antar Saham</b> tersedia untuk akun <b>Premium</b>.<br>
+                    <small style="color:#94a3b8;">Upgrade untuk melihat hubungan pergerakan antar saham.</small>
+                </div>""", unsafe_allow_html=True)
 
-# ─── SEKSI 4: DATA HISTORIS LENGKAP ───────────────────────────────────────────
+
+# ─── SEKSI 4: DATA HISTORIS ───────────────────────────────────────────────────
 st.markdown('<p class="section-label">📋 Data Historis</p>', unsafe_allow_html=True)
 
 with st.expander("Lihat Tabel Data OHLCV Lengkap"):
+    n_baris = st.number_input(
+        "Jumlah baris terakhir:", min_value=5, max_value=250, value=20, step=5
+    )
     tab_h_usd, tab_h_ihsg, tab_h_saham = st.tabs(["USD/IDR", "IHSG", "Saham Pilihan"])
 
-    n_baris = st.number_input("Jumlah baris terakhir:", min_value=5, max_value=250, value=20, step=5)
+    def render_ohlcv(df: pd.DataFrame):
+        disp = df[["Open", "High", "Low", "Close", "Volume"]].tail(int(n_baris)).copy()
+        disp.index = disp.index.strftime("%d %b %Y")
+        st.dataframe(disp.style.format("{:,.2f}"), use_container_width=True)
 
     with tab_h_usd:
-        df_tampil = data_usd[['Open', 'High', 'Low', 'Close', 'Volume']].tail(int(n_baris)).copy()
-        df_tampil.index = df_tampil.index.strftime('%d %b %Y')
-        st.dataframe(df_tampil.style.format("{:,.2f}"), use_container_width=True)
+        render_ohlcv(data_usd)
 
     with tab_h_ihsg:
-        df_tampil2 = data_ihsg[['Open', 'High', 'Low', 'Close', 'Volume']].tail(int(n_baris)).copy()
-        df_tampil2.index = df_tampil2.index.strftime('%d %b %Y')
-        st.dataframe(df_tampil2.style.format("{:,.2f}"), use_container_width=True)
+        render_ohlcv(data_ihsg)
 
     with tab_h_saham:
         if saham_pilihan and data_saham_dict:
-            saham_terpilih = st.selectbox("Pilih saham:", list(data_saham_dict.keys()),
-                                          format_func=lambda x: f"{daftar_saham.get(x, x)} ({x})")
-            df_saham_tampil = data_saham_dict[saham_terpilih][['Open', 'High', 'Low', 'Close', 'Volume']].tail(int(n_baris)).copy()
-            df_saham_tampil.index = df_saham_tampil.index.strftime('%d %b %Y')
-            st.dataframe(df_saham_tampil.style.format("{:,.2f}"), use_container_width=True)
+            saham_terpilih = st.selectbox(
+                "Pilih saham:",
+                list(data_saham_dict.keys()),
+                format_func=lambda x: f"{DAFTAR_SAHAM.get(x, x)} ({x})",
+            )
+            render_ohlcv(data_saham_dict[saham_terpilih])
         else:
             st.info("Pilih saham di sidebar terlebih dahulu.")
+
 
 # ─── FOOTER ───────────────────────────────────────────────────────────────────
 st.divider()
 st.caption(
     "📊 **ArthaPulse** — Data bersumber dari Yahoo Finance melalui yfinance. "
-    "Informasi ini bukan merupakan rekomendasi investasi. "
-    "Selalu lakukan riset mandiri sebelum mengambil keputusan finansial."
+    "Informasi ini **bukan** rekomendasi investasi. "
+    "Lakukan riset mandiri sebelum mengambil keputusan finansial."
 )
