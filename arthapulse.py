@@ -493,8 +493,8 @@ else:
                 tanda = "▲" if ret_total >= 0 else "▼"
                 st.markdown(f"""
                 <div style="display:flex;justify-content:space-between;align-items:center;
-                            padding:10px 14px;background:#f8fafc;border-radius:10px;
-                            margin-bottom:8px;border:1px solid #e2e8f0;">
+                            padding:10px 14px;background: #0f172a;border-radius:10px;
+                            margin-bottom:8px;border:1px solid #1e293b;">
                     <span style="font-weight:600;font-size:0.85rem;">{nama}</span>
                     <span style="color:{warna};font-weight:700;font-size:0.9rem;">{tanda} {abs(ret_total):.2f}%</span>
                 </div>""", unsafe_allow_html=True)
