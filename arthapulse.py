@@ -5,9 +5,11 @@ import numpy as np
 import requests
 import firebase_admin
 from firebase_admin import credentials, firestore, auth
+import json
 
 if not firebase_admin._apps:
-    cred = credentials.Certificate("firebase-key.json")
+    firebase_info = json.loads(st.secrets["firebase_json"])
+    cred = credentials.Certificate(firebase_info)
     firebase_admin.initialize_app(cred)
 
 db = firestore.client()
