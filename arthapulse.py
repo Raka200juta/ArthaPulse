@@ -275,7 +275,7 @@ with st.sidebar:
                         <li>Akses Matriks Korelasi Antar Saham</li>
                         <li>Sinyal Indikator Makro Lebih Cepat</li>
                     </ul>
-                    <a href="https://trakteer.id/r4kiya/showcase" 
+                    <a href="https://trakteer.id/r4kiya/shop" 
                        target="_blank" 
                        style="display: block; background: #7c3aed; color: white; text-decoration: none; 
                               padding: 10px; border-radius: 8px; font-weight: 600; font-size: 0.9rem;">
