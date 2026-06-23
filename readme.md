@@ -24,7 +24,7 @@ ArthaPulse is a web-based financial dashboard application providing real-time an
 ## Installation Guide:
 1. Install the required dependencies:
     ```bash
-    pip install streamlit yfinance pandas numpy
+    pip install requirements.txt
 
 2. Launch the application:
     ```bash
