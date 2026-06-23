@@ -1,6 +1,6 @@
 """
 ArthaPulse — Dashboard Finansial Indonesia
-Versi: 2.0 (Penyempurnaan Menyeluruh)
+Versi: 2.1 (Fix Mobile Tooltip)
 """
 
 import streamlit as st
@@ -12,6 +12,7 @@ import firebase_admin
 from firebase_admin import credentials, firestore, auth
 import json
 import re
+import plotly.graph_objects as go
 
 # ─── KONFIGURASI HALAMAN (harus paling awal) ──────────────────────────────────
 st.set_page_config(
@@ -42,10 +43,10 @@ FIREBASE_WEB_API_KEY = st.secrets.get("firebase_web_api_key", "AIzaSyAbJ_CRg_VwX
 # ─── SESSION STATE INITIALIZATION ─────────────────────────────────────────────
 def init_session_state():
     defaults = {
-        "user_info": None,        # UID pengguna yang login
-        "user_status": "Free",    # Status akun: "Free" atau "Premium"
-        "auth_error": None,       # Pesan error autentikasi
-        "auth_success": None,     # Pesan sukses autentikasi
+        "user_info": None,
+        "user_status": "Free",
+        "auth_error": None,
+        "auth_success": None,
     }
     for key, val in defaults.items():
         if key not in st.session_state:
@@ -123,13 +124,24 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 
+# ─── PLOTLY LAYOUT DEFAULTS ───────────────────────────────────────────────────
+PLOTLY_BASE = dict(
+    paper_bgcolor="rgba(0,0,0,0)",
+    plot_bgcolor="rgba(0,0,0,0)",
+    margin=dict(l=0, r=0, t=4, b=0),
+    hovermode="x unified",
+    xaxis=dict(showgrid=False, zeroline=False),
+    yaxis=dict(showgrid=True, gridcolor="rgba(148,163,184,0.15)", zeroline=False),
+)
+PLOTLY_CONFIG = {"displayModeBar": False, "scrollZoom": False}
+
+
 # ─── FUNGSI AUTENTIKASI ────────────────────────────────────────────────────────
 def is_valid_email(email: str) -> bool:
     return bool(re.match(r"^[\w.+-]+@[\w-]+\.[a-zA-Z]{2,}$", email))
 
 
 def login_user(email: str, password: str) -> dict | None:
-    """Login via Firebase REST API. Kembalikan dict {uid, email} atau None."""
     url = f"https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key={FIREBASE_WEB_API_KEY}"
     try:
         resp = requests.post(url, json={"email": email, "password": password, "returnSecureToken": True}, timeout=10)
@@ -145,7 +157,6 @@ def login_user(email: str, password: str) -> dict | None:
 
 
 def register_user(email: str, password: str) -> dict:
-    """Daftarkan pengguna baru. Kembalikan dict {success: bool, error?: str}."""
     try:
         user = auth.create_user(email=email, password=password)
         db.collection("users").document(user.uid).set({
@@ -180,7 +191,6 @@ def _translate_firebase_error(msg: str) -> str:
 
 @st.cache_data(ttl=60)
 def get_user_status(uid: str) -> str:
-    """Ambil status premium dari Firestore (cache 60 detik)."""
     try:
         doc = db.collection("users").document(uid).get()
         return doc.to_dict().get("status", "Free") if doc.exists else "Free"
@@ -191,7 +201,6 @@ def get_user_status(uid: str) -> str:
 # ─── FUNGSI DATA & INDIKATOR ───────────────────────────────────────────────────
 @st.cache_data(ttl=300, show_spinner=False)
 def load_financial_data(ticker_symbol: str, time_period: str) -> pd.DataFrame:
-    """Ambil data historis dari Yahoo Finance."""
     try:
         session = requests.Session()
         session.headers.update({
@@ -275,7 +284,6 @@ with st.sidebar:
     st.markdown('<p class="main-subtitle" style="color:#94a3b8;">Panel Kendali Analisis</p>', unsafe_allow_html=True)
     st.divider()
 
-    # ── Panel Autentikasi ──
     if st.session_state.user_info is None:
         st.markdown("**🔐 Akses Akun**")
         menu_auth = st.radio("Pilih Aksi", ["Login", "Daftar"], horizontal=True, label_visibility="collapsed")
@@ -283,7 +291,6 @@ with st.sidebar:
         auth_email    = st.text_input("Email", placeholder="nama@email.com")
         auth_password = st.text_input("Password", type="password", placeholder="Minimal 6 karakter")
 
-        # Tampilkan pesan error/sukses persisten
         if st.session_state.auth_error:
             st.error(st.session_state.auth_error)
         if st.session_state.auth_success:
@@ -310,7 +317,7 @@ with st.sidebar:
                         st.session_state.auth_error = result.get("error", "Login gagal.") if result else "Login gagal."
                 st.rerun()
 
-        else:  # Daftar
+        else:
             if st.button("Buat Akun", use_container_width=True, type="primary"):
                 st.session_state.auth_error   = None
                 st.session_state.auth_success = None
@@ -331,8 +338,6 @@ with st.sidebar:
                 st.rerun()
 
     else:
-        # ── Pengguna Sudah Login ──
-        # Refresh status dari Firestore (di-cache 60 detik)
         st.session_state.user_status = get_user_status(st.session_state.user_info)
         is_premium = st.session_state.user_status == "Premium"
 
@@ -364,7 +369,6 @@ with st.sidebar:
                 """, unsafe_allow_html=True)
 
         if st.button("Log Out", use_container_width=True):
-            # Bersihkan semua session state
             for key in list(st.session_state.keys()):
                 del st.session_state[key]
             init_session_state()
@@ -372,7 +376,6 @@ with st.sidebar:
 
     st.divider()
 
-    # ── Pengaturan Tampilan ──
     st.markdown("**⏱ Periode Data**")
     periode = st.selectbox(
         label="Periode",
@@ -391,7 +394,6 @@ with st.sidebar:
     st.divider()
     st.markdown("**🏦 Pilih Saham IDX**")
 
-    # Tentukan apakah pengguna premium (aman dari duplikasi)
     is_premium_user = st.session_state.get("user_status") == "Premium"
 
     saham_default = ["BBCA.JK", "BBRI.JK", "TLKM.JK"]
@@ -453,7 +455,6 @@ usd_low   = data_usd["Low"].min()
 
 with col1:
     tanda = "▲" if delta_usd > 0 else "▼"
-    # IDR melemah (USD naik) = negatif untuk investor
     kelas = "signal-delta-negative" if delta_usd > 0 else "signal-delta-positive"
     st.markdown(f"""
     <div class="signal-card">
@@ -492,45 +493,87 @@ with col4:
 
 # ─── FUNGSI HELPER: PANEL GRAFIK ──────────────────────────────────────────────
 def render_chart_panel(df: pd.DataFrame, label: str, is_idr: bool = False):
-    """Render grafik harga + indikator opsional."""
+    """Render grafik harga + indikator opsional menggunakan Plotly."""
     col_grafik, col_analisis = st.columns([2, 1])
 
     with col_grafik:
-        df_plot = pd.DataFrame({label: df["Close"]})
+        # ── Grafik Harga Utama ──
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(
+            x=df.index, y=df["Close"],
+            name=label, line=dict(color="#29b5e8", width=2)
+        ))
         if tampilkan_ma:
-            df_plot["MA20"] = df["Close"].rolling(20).mean()
-            df_plot["MA50"] = df["Close"].rolling(50).mean()
+            fig.add_trace(go.Scatter(
+                x=df.index, y=df["Close"].rolling(20).mean(),
+                name="MA20", line=dict(color="#f59e0b", width=1.5, dash="dot")
+            ))
+            fig.add_trace(go.Scatter(
+                x=df.index, y=df["Close"].rolling(50).mean(),
+                name="MA50", line=dict(color="#10b981", width=1.5, dash="dot")
+            ))
         if tampilkan_bb:
-            bb_up, _, bb_low = hitung_bollinger(df["Close"])
-            df_plot["BB Atas"]  = bb_up
-            df_plot["BB Bawah"] = bb_low
+            bb_up, bb_mid, bb_low = hitung_bollinger(df["Close"])
+            fig.add_trace(go.Scatter(
+                x=df.index, y=bb_up, name="BB Atas",
+                line=dict(color="#ef4444", width=1, dash="dash")
+            ))
+            fig.add_trace(go.Scatter(
+                x=df.index, y=bb_low, name="BB Bawah",
+                line=dict(color="#6366f1", width=1, dash="dash"),
+                fill="tonexty", fillcolor="rgba(99,102,241,0.05)"
+            ))
 
-        st.line_chart(
-            df_plot.dropna(), height=320,
-            color=["#29b5e8", "#f59e0b", "#10b981", "#ef4444", "#6366f1"]
+        fig.update_layout(
+            height=320,
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+            **PLOTLY_BASE
         )
+        st.plotly_chart(fig, use_container_width=True, config=PLOTLY_CONFIG)
 
+        # ── Panel RSI ──
         if tampilkan_rsi:
             rsi_s = hitung_rsi(df["Close"])
+            fig_rsi = go.Figure()
+            fig_rsi.add_trace(go.Scatter(
+                x=df.index, y=rsi_s,
+                name="RSI", line=dict(color="#a855f7", width=2)
+            ))
+            fig_rsi.add_hline(y=70, line_dash="dash", line_color="#ef4444", opacity=0.5)
+            fig_rsi.add_hline(y=30, line_dash="dash", line_color="#4ade80", opacity=0.5)
+            fig_rsi.update_layout(
+                height=120,
+                showlegend=False,
+                yaxis=dict(showgrid=False, zeroline=False, range=[0, 100]),
+                **{k: v for k, v in PLOTLY_BASE.items() if k != "yaxis"}
+            )
             st.caption("RSI (14 periode) — Overbought >70 | Oversold <30")
-            st.line_chart(pd.DataFrame({"RSI": rsi_s}).dropna(), height=120, color=["#a855f7"])
+            st.plotly_chart(fig_rsi, use_container_width=True, config=PLOTLY_CONFIG)
 
+        # ── Panel MACD ──
         if tampilkan_macd:
             macd_s, signal_s = hitung_macd(df["Close"])
-            st.caption("MACD (12,26,9)")
-            st.line_chart(
-                pd.DataFrame({"MACD": macd_s, "Signal": signal_s}).dropna(),
-                height=120, color=["#3b82f6", "#f97316"]
+            fig_macd = go.Figure()
+            fig_macd.add_trace(go.Scatter(
+                x=df.index, y=macd_s,
+                name="MACD", line=dict(color="#3b82f6", width=2)
+            ))
+            fig_macd.add_trace(go.Scatter(
+                x=df.index, y=signal_s,
+                name="Signal", line=dict(color="#f97316", width=1.5)
+            ))
+            fig_macd.update_layout(
+                height=120,
+                legend=dict(orientation="h", yanchor="bottom", y=1.02),
+                **PLOTLY_BASE
             )
+            st.caption("MACD (12,26,9)")
+            st.plotly_chart(fig_macd, use_container_width=True, config=PLOTLY_CONFIG)
 
     with col_analisis:
         sinyal = sinyal_teknikal(df)
-        harga_fmt = (
-            f"Rp {sinyal['MA20']:,.0f}" if is_idr else f"{sinyal['MA20']:,.2f}"
-        )
-        ma50_fmt = (
-            f"Rp {sinyal['MA50']:,.0f}" if is_idr else f"{sinyal['MA50']:,.2f}"
-        )
+        harga_fmt = f"Rp {sinyal['MA20']:,.0f}" if is_idr else f"{sinyal['MA20']:,.2f}"
+        ma50_fmt  = f"Rp {sinyal['MA50']:,.0f}" if is_idr else f"{sinyal['MA50']:,.2f}"
 
         st.markdown(f"**🔍 Analisis Teknikal {label}**")
         st.markdown(f"""
@@ -603,7 +646,6 @@ with tab_ihsg_chart:
 # ─── SEKSI 3: ANALISIS SAHAM ──────────────────────────────────────────────────
 st.markdown('<p class="section-label">🏦 Portofolio Saham Pilihan</p>', unsafe_allow_html=True)
 
-# ── Paywall: batas 2 saham untuk Free ──
 MAX_FREE_SAHAM = 2
 if not is_premium_user and len(saham_pilihan) > MAX_FREE_SAHAM:
     st.warning(
@@ -667,28 +709,65 @@ else:
                 ])
 
                 with tab_nominal:
-                    df_harga = pd.DataFrame({t: d["Close"] for t, d in data_saham_dict.items()})
-                    st.line_chart(df_harga, height=300)
+                    fig_nom = go.Figure()
+                    for t, d in data_saham_dict.items():
+                        fig_nom.add_trace(go.Scatter(
+                            x=d.index, y=d["Close"],
+                            name=DAFTAR_SAHAM.get(t, t)
+                        ))
+                    fig_nom.update_layout(
+                        height=300,
+                        legend=dict(orientation="h", yanchor="bottom", y=1.02),
+                        **PLOTLY_BASE
+                    )
+                    st.plotly_chart(fig_nom, use_container_width=True, config=PLOTLY_CONFIG)
 
                 with tab_normalized:
-                    df_norm = pd.DataFrame({
-                        t: (d["Close"] / d["Close"].iloc[0]) * 100
-                        for t, d in data_saham_dict.items()
-                    })
+                    fig_norm = go.Figure()
+                    for t, d in data_saham_dict.items():
+                        normed = (d["Close"] / d["Close"].iloc[0]) * 100
+                        fig_norm.add_trace(go.Scatter(
+                            x=d.index, y=normed,
+                            name=DAFTAR_SAHAM.get(t, t)
+                        ))
+                    fig_norm.update_layout(
+                        height=300,
+                        legend=dict(orientation="h", yanchor="bottom", y=1.02),
+                        **PLOTLY_BASE
+                    )
                     st.caption("Nilai 100 = harga awal periode. Di atas 100 = saham naik.")
-                    st.line_chart(df_norm, height=300)
+                    st.plotly_chart(fig_norm, use_container_width=True, config=PLOTLY_CONFIG)
 
                 with tab_return:
-                    df_ret = pd.DataFrame({
-                        t: d["Close"].pct_change() * 100
-                        for t, d in data_saham_dict.items()
-                    })
-                    st.caption("Return harian (%). Volatilitas tinggi = batang lebih besar.")
-                    st.line_chart(df_ret.dropna(), height=300)
+                    fig_ret = go.Figure()
+                    for t, d in data_saham_dict.items():
+                        ret = d["Close"].pct_change() * 100
+                        fig_ret.add_trace(go.Scatter(
+                            x=d.index, y=ret,
+                            name=DAFTAR_SAHAM.get(t, t)
+                        ))
+                    fig_ret.update_layout(
+                        height=300,
+                        legend=dict(orientation="h", yanchor="bottom", y=1.02),
+                        **PLOTLY_BASE
+                    )
+                    st.caption("Return harian (%). Volatilitas tinggi = fluktuasi lebih besar.")
+                    st.plotly_chart(fig_ret, use_container_width=True, config=PLOTLY_CONFIG)
+
             else:
                 # Tampilkan harga absolut saja untuk Free
-                df_harga = pd.DataFrame({t: d["Close"] for t, d in data_saham_dict.items()})
-                st.line_chart(df_harga, height=300)
+                fig_free = go.Figure()
+                for t, d in data_saham_dict.items():
+                    fig_free.add_trace(go.Scatter(
+                        x=d.index, y=d["Close"],
+                        name=DAFTAR_SAHAM.get(t, t)
+                    ))
+                fig_free.update_layout(
+                    height=300,
+                    legend=dict(orientation="h", yanchor="bottom", y=1.02),
+                    **PLOTLY_BASE
+                )
+                st.plotly_chart(fig_free, use_container_width=True, config=PLOTLY_CONFIG)
 
                 st.markdown("""
                 <div class="premium-lock" style="margin-top:8px;padding:14px;font-size:0.85rem;">
