@@ -355,10 +355,10 @@ with st.sidebar:
                         <li>Matriks Korelasi Antar Saham</li>
                         <li>Indikator Makro Lebih Cepat</li>
                     </ul>
-                    <a href="https://trakteer.id/r4kiya/shop" target="_blank"
+                    <a href="https://sociabuzz.com/raka200juta/shop" target="_blank"
                        style="display:block;background:#7c3aed;color:white;text-decoration:none;
                               padding:10px;border-radius:8px;font-weight:600;font-size:0.9rem;">
-                        Beli Premium via Trakteer
+                        Beli Premium via Sociabuzz
                     </a>
                 </div>
                 """, unsafe_allow_html=True)
